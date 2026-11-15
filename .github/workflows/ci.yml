@@ -1,7 +1,9 @@
 name: CI
 
-# Actions are pinned to commit SHAs. A tag can be moved to point at different code;
-# a SHA cannot. Dependabot keeps these current and raises a PR when one moves.
+# The jobs live in secured-ai/workflows and are pinned by commit SHA rather than
+# by @main. A shared workflow is a supply chain concentration point: anyone who
+# can push there would otherwise change CI here with no review in this
+# repository. Dependabot raises the PR when it moves.
 on:
   push:
     branches: [main]
@@ -12,52 +14,27 @@ permissions:
 
 jobs:
   suite:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: ["22.18", "24"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ matrix.node-version }}
-      - name: Install
-        run: npm ci
-      - name: Types, including the tests
-        run: npm run typecheck
-      - name: Suite
-        run: npm test
+    uses: secured-ai/workflows/.github/workflows/node-suite.yml@cdcd70a91411a53f227c354e00de008cbd53c180
+    with:
+      node-versions: '["22.18","24"]'
 
-  # The service is only a control while it fails closed. These are the claims that
-  # make it one, checked by name so that deleting a test rather than fixing the
-  # behaviour turns this red with the specific guarantee that went missing.
+  # The service is only a control while it fails closed. Each guarantee is
+  # named, so deleting a test rather than fixing the behaviour turns this red
+  # with the specific one that went missing.
   fails-closed:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "22.18"
-      - name: Install
-        run: npm ci
-      - name: It denies rather than trusting the agent
-        run: |
-          npm test 2>&1 | tee /tmp/suite.txt
-          for claim in \
-            "the agent does not get its own claim evaluated" \
-            "facts that cannot be established deny, they do not fall back to the agent" \
-            "a resolver that hangs denies rather than waiting forever" \
-            "two resolvers that disagree deny, because neither can be trusted" \
-            "the agent cannot widen the envelope through context" \
-            "the store has no write path at all" \
-            "a supervisor that throws still denies" \
-            "the service denies an unknown envelope rather than erroring" \
-            "a tampered record does not verify"; do
-            grep -q "ok .* - $claim" /tmp/suite.txt \
-              || { echo "MISSING OR FAILING: $claim"; exit 1; }
-          done
-          echo "every fail-closed guarantee is still tested and still passing"
+    uses: secured-ai/workflows/.github/workflows/claims.yml@cdcd70a91411a53f227c354e00de008cbd53c180
+    with:
+      claims: |
+        the agent does not get its own claim evaluated
+        facts that cannot be established deny, they do not fall back to the agent
+        a resolver that hangs denies rather than waiting forever
+        two resolvers that disagree deny, because neither can be trusted
+        the agent cannot widen the envelope through context
+        a tool outside the envelope is denied before any system of record is touched
+        the store has no write path at all
+        a supervisor that throws still denies
+        the service denies an unknown envelope rather than erroring
+        a tampered record does not verify
 
   all-checks-passed:
     if: always()
