@@ -1,0 +1,46 @@
+{
+  "name": "supervisor-check",
+  "version": "0.1.0",
+  "description": "An independent checker outside the agent's reasoning loop: derives the facts of a proposed call from the systems of record, evaluates them against the intent envelope, and signs the decision.",
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "keywords": [
+    "ai-security",
+    "agent",
+    "intent-envelope",
+    "authorization",
+    "zero-trust"
+  ],
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "intent-envelope": "^0.2.0"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/secured-ai/supervisor-check.git"
+  },
+  "homepage": "https://securedai.org/products",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3"
+  }
+}
