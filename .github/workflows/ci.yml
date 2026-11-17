@@ -36,17 +36,34 @@ jobs:
         the service denies an unknown envelope rather than erroring
         a tampered record does not verify
 
+  # The suite runs against the source tree. An installed copy differs in two
+  # ways no test sees: Node refuses to strip types under node_modules, so a
+  # package pointing at its sources cannot be imported at all, and
+  # intent-envelope resolves from the consumer's tree rather than this one.
+  # Either ships a package that fails on install with CI fully green.
+  packaged-install:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - run: npm ci
+      - run: npm run smoke
+
   all-checks-passed:
     if: always()
-    needs: [suite, fails-closed]
+    needs: [suite, fails-closed, packaged-install]
     runs-on: ubuntu-latest
     steps:
       - name: Every required job must have succeeded
         run: |
-          echo "suite:        ${{ needs.suite.result }}"
-          echo "fails-closed: ${{ needs['fails-closed'].result }}"
+          echo "suite:            ${{ needs.suite.result }}"
+          echo "fails-closed:     ${{ needs['fails-closed'].result }}"
+          echo "packaged-install: ${{ needs['packaged-install'].result }}"
           if [ "${{ needs.suite.result }}" != "success" ] || \
-             [ "${{ needs['fails-closed'].result }}" != "success" ]; then
+             [ "${{ needs['fails-closed'].result }}" != "success" ] || \
+             [ "${{ needs['packaged-install'].result }}" != "success" ]; then
             echo "A required job did not succeed."
             exit 1
           fi

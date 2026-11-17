@@ -1,0 +1,28 @@
+// What gets published.
+//
+// The sources import each other with explicit .ts extensions, which is what
+// Node's native type stripping requires when running straight from this tree.
+// Node refuses to strip types for anything under node_modules, so a published
+// package pointing at those sources would throw
+// ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING on the consumer's first import,
+// and `npx red-team-harness demo` would fail for everyone who tried it.
+//
+// rewriteRelativeImportExtensions turns those .ts specifiers into .js on the
+// way out, so one set of sources serves both: run directly here, compiled for
+// everyone else. tools/consumer-smoke.mjs is what proves it.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rewriteRelativeImportExtensions": true,
+    // Explicit, not inferred. tsc infers the common source directory and newer
+    // versions refuse to guess (TS5011), so leaving it out builds here and
+    // fails in CI, which is the worst place to find out.
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  },
+  "include": ["src"]
+}

@@ -2,9 +2,41 @@
   "name": "supervisor-check",
   "version": "0.1.0",
   "description": "An independent checker outside the agent's reasoning loop: derives the facts of a proposed call from the systems of record, evaluates them against the intent envelope, and signs the decision.",
+  "license": "Apache-2.0",
+  "author": "SecuredAI.org",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "engines": {
+    "node": ">=22.18"
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json",
     "test": "node --test test/*.test.ts",
-    "typecheck": "tsc -p tsconfig.json"
+    "smoke": "node tools/consumer-smoke.mjs",
+    "prepack": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/secured-ai/supervisor-check.git"
+  },
+  "homepage": "https://securedai.org/products",
+  "bugs": {
+    "url": "https://github.com/secured-ai/supervisor-check/issues"
   },
   "keywords": [
     "ai-security",
@@ -13,31 +45,12 @@
     "authorization",
     "zero-trust"
   ],
-  "author": "",
-  "license": "Apache-2.0",
-  "dependencies": {
-    "intent-envelope": "^0.2.0"
-  },
-  "type": "module",
-  "exports": {
-    ".": "./src/index.ts",
-    "./package.json": "./package.json"
-  },
-  "files": [
-    "src",
-    "README.md"
-  ],
-  "engines": {
-    "node": ">=22.18"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/secured-ai/supervisor-check.git"
-  },
-  "homepage": "https://securedai.org/products",
   "publishConfig": {
     "access": "public",
     "provenance": true
+  },
+  "dependencies": {
+    "intent-envelope": "^0.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.20.5",

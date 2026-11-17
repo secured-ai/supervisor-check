@@ -1,0 +1,95 @@
+name: Release to npm
+
+# Stages this package when a GitHub release is published. It does not publish it.
+#
+# `npm stage publish` puts the tarball in a queue the public cannot install
+# from. A maintainer then runs `npm stage approve <id>` and answers a 2FA
+# challenge to release it. A compromised workflow, a stolen OIDC token or a bad
+# merge can therefore queue a release, but cannot ship one. For the component
+# that decides whether an agent's action is allowed, that is the right shape:
+# the argument this project makes about agents applies to its own pipeline.
+#
+# Authentication is npm Trusted Publishing over OIDC, so no NPM_TOKEN is stored
+# here. Staging never prompts for 2FA, which is what lets it run unattended;
+# approval always does, which is what makes it a gate.
+#
+# RELEASING.md has the approval steps and the one-time setup.
+#
+# Actions are pinned to commit SHAs, kept current by Dependabot.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+      - name: Install
+        run: npm ci
+      # The suite runs against the source tree, where Node strips types happily.
+      # smoke installs the tarball and imports it, which is the only check that
+      # sees ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING, and the only one that
+      # resolves intent-envelope the way a consumer's install does.
+      - name: Types, suite and packaged install
+        run: |
+          npm run typecheck
+          npm test
+          npm run smoke
+      - name: Verify the tag matches the package version
+        if: github.event_name == 'release'
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$VERSION" != "$TAG" ]; then
+            echo "Tag $TAG does not match package.json version $VERSION"; exit 1
+          fi
+          echo "version $VERSION matches tag"
+
+  stage:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      # Without this npm cannot get an OIDC token, and staging falls back to
+      # looking for a credential that is deliberately absent.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # v6 or newer to match npm's reference workflow for trusted publishing.
+      # Caching is off because npm documents that a release build should never
+      # restore one.
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+      - name: npm 11.15 or newer is required for staging
+        run: |
+          npm install -g npm@^11.15.0
+          npm --version
+      - name: Install
+        run: npm ci
+      # prepack runs the build, so the staged tarball is the one smoke exercised.
+      # --provenance is explicit rather than assumed: it is what lets anyone
+      # verify the tarball was built from this commit, and a release that
+      # quietly lost its attestation would be worse than one that failed.
+      - name: Stage for a maintainer to approve
+        run: npm stage publish --access public --provenance
+      - name: Say what has to happen next
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          echo "Staged $NAME. Nothing is installable yet."
+          echo "Approve it with 2FA:"
+          echo "  npm stage list $NAME"
+          echo "  npm stage approve <the id that prints>"
+          echo "Or reject it:  npm stage reject <the id that prints>"
