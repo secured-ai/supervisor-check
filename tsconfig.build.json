@@ -15,6 +15,10 @@
   "compilerOptions": {
     "noEmit": false,
     "rewriteRelativeImportExtensions": true,
+    // Explicit, not inferred. tsc infers the common source directory and newer
+    // versions refuse to guess (TS5011), so leaving it out builds here and
+    // fails in CI, which is the worst place to find out.
+    "rootDir": "src",
     "outDir": "dist",
     "declaration": true,
     "declarationMap": true,
