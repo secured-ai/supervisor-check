@@ -305,17 +305,36 @@ test('a tool on tools.deny is denied even when it is also on allow', async () =>
 
 // ---------- the service ----------
 
+// Every request to the service is signed now. One registered caller, allowed
+// the envelope these tests use, and a fetch that signs like the real client.
+const CALLER = (() => {
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  return {
+    id: 'host-1',
+    privateKeyPem: privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+    publicKeyPem: publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+  };
+})();
+const CALLERS = [{ id: CALLER.id, publicKeyPem: CALLER.publicKeyPem, envelopes: ['support-bot', 'nope'] }];
+
+async function signedCheck(port: number, payload: unknown): Promise<Response> {
+  const { signRequest } = await import('../src/auth.ts');
+  const body = Buffer.from(JSON.stringify(payload));
+  return fetch(`http://127.0.0.1:${port}/check`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...signRequest('POST', '/check', body, CALLER.id, CALLER.privateKeyPem) },
+    body,
+  });
+}
+
 test('the service denies an unknown envelope rather than erroring', async () => {
   const { createSupervisorServer } = await import('../src/server.ts');
   const store = await storeWith({ 'a.json': ENVELOPE });
-  const server = createSupervisorServer({ store, supervisor: supervisor([]) });
+  const server = createSupervisorServer({ store, supervisor: supervisor([]), callers: CALLERS, insecurePlaintext: true });
   await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()));
   const { port } = server.address() as { port: number };
 
-  const res = await fetch(`http://127.0.0.1:${port}/check`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ envelope_id: 'nope', call: { tool: 'send_email' } }),
-  });
+  const res = await signedCheck(port, { envelope_id: 'nope', call: { tool: 'send_email' } });
   const body = await res.json() as Record<string, unknown>;
   server.close();
 
@@ -329,17 +348,15 @@ test('the service signs the record and returns a verifiable jws', async () => {
   const store = await storeWith({ 'a.json': ENVELOPE });
   const server = createSupervisorServer({
     store, supervisor: supervisor([directory({ 'u-2': 'dana@example.com' })]), signingKeyPem: PEM, kid: 'sup-1',
+    callers: CALLERS, insecurePlaintext: true,
   });
   await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()));
   const { port } = server.address() as { port: number };
 
-  const res = await fetch(`http://127.0.0.1:${port}/check`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
+  const res = await signedCheck(port, {
       envelope_id: 'support-bot', agent_identity: 'agent-1', principal: 'user-7',
       call: { tool: 'send_email', arguments: { to: ['u-2'] } },
-    }),
-  });
+    });
   const body = await res.json() as Record<string, unknown>;
   server.close();
 
@@ -355,14 +372,11 @@ test('a supervisor that throws still denies', async () => {
   const { createSupervisorServer } = await import('../src/server.ts');
   const store = await storeWith({ 'a.json': ENVELOPE });
   const broken = { check: async () => { throw new Error('boom'); } } as unknown as Supervisor;
-  const server = createSupervisorServer({ store, supervisor: broken });
+  const server = createSupervisorServer({ store, supervisor: broken, callers: CALLERS, insecurePlaintext: true });
   await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()));
   const { port } = server.address() as { port: number };
 
-  const res = await fetch(`http://127.0.0.1:${port}/check`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ envelope_id: 'support-bot', call: { tool: 'send_email' } }),
-  });
+  const res = await signedCheck(port, { envelope_id: 'support-bot', call: { tool: 'send_email' } });
   const body = await res.json() as Record<string, unknown>;
   server.close();
 

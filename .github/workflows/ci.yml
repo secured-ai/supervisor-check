@@ -35,6 +35,19 @@ jobs:
         a supervisor that throws still denies
         the service denies an unknown envelope rather than erroring
         a tampered record does not verify
+        a supervisor with no callers will not start
+        an unsigned request is refused before anything is evaluated
+        a replayed request is refused
+        a forged request cannot burn a real caller's nonce
+        a caller cannot ask about another caller's envelope, or tell that it exists
+        the client acts on the signed record, never on the plain outcome beside it
+        a captured allow cannot be replayed as the answer to another question
+        the client fails closed when the supervisor cannot be reached
+        the client fails closed when the answer starts and then stalls
+        an unsigned answer is never an allow
+        a pinned certificate that does not chain to the configured CA is refused
+        with a client CA configured, a connection without a certificate is refused
+        a valid certificate does not rescue a bad signature
 
   # The suite runs against the source tree. An installed copy differs in two
   # ways no test sees: Node refuses to strip types under node_modules, so a
