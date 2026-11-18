@@ -28,10 +28,12 @@ would have found it in the first hour.
   only public keys. Requests more than 60 seconds out are refused, nonces are
   single use, and a nonce is only spent by a request whose signature verified,
   so a forger cannot burn a real caller's nonces.
-- Client certificates, when the supervisor terminates TLS itself. The
-  certificate must chain to the configured CA and its SHA-256 fingerprint must
-  be pinned to a caller. Pinned, because any certificate the CA ever issued has
-  a subject name.
+- Client certificates, when the supervisor terminates TLS itself. With a
+  `ca` configured the handshake requires a certificate that chains to it, and
+  its SHA-256 fingerprint must also be pinned to a caller. Pinned, because any
+  certificate the CA ever issued has a subject name. Configuring client
+  certificates means requiring them; signing-only callers use a listener
+  without a `ca`.
 - A presented credential that fails is a failure, not a fallback: a valid
   certificate with a bad signature is refused, and a certificate and signature
   naming different callers are refused.

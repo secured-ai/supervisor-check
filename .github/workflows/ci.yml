@@ -46,6 +46,7 @@ jobs:
         the client fails closed when the answer starts and then stalls
         an unsigned answer is never an allow
         a pinned certificate that does not chain to the configured CA is refused
+        with a client CA configured, a connection without a certificate is refused
         a valid certificate does not rescue a bad signature
 
   # The suite runs against the source tree. An installed copy differs in two

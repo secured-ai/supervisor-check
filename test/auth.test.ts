@@ -426,14 +426,23 @@ function tlsPost(port: number, ca: string, body: Buffer, cli?: { key: string; ce
   });
 }
 
-async function serveTls() {
+/** A request that may be refused in the handshake, before any HTTP happens. */
+async function attempt(port: number, ca: string, body: Buffer, cli?: { key: string; cert: string }, headers: Record<string, string> = {}) {
+  try {
+    return await tlsPost(port, ca, body, cli, headers);
+  } catch (e) {
+    return { status: 0, refusedInHandshake: true, error: (e as Error).message, body: {} as Record<string, unknown> };
+  }
+}
+
+async function serveTls({ mutual = true }: { mutual?: boolean } = {}) {
   const p = await pki();
   const failures: string[] = [];
   const spy = counting();
   const server = createSupervisorServer({
     store: await store(), supervisor: spy as unknown as Supervisor,
     signingKeyPem: SUPERVISOR_KEY,
-    tls: { key: p.srvKey, cert: p.srvCrt, ca: p.ca },
+    tls: { key: p.srvKey, cert: p.srvCrt, ...(mutual ? { ca: p.ca } : {}) },
     callers: [
       ...CALLERS,
       { id: 'host-m', certFingerprint: p.cli.pinned.fp, envelopes: ['support-bot'] },
@@ -472,11 +481,27 @@ test('a certificate from the same CA that is not pinned identifies no one', asyn
 });
 
 test('a pinned certificate that does not chain to the configured CA is refused', async () => {
-  const { server, p, failures, port } = await serveTls();
-  const res = await tlsPost(port, p.ca, BODY, p.cli.outsider);
+  // Pinned to a caller, but issued by a CA the supervisor does not trust. The
+  // handshake refuses it before a single byte of HTTP is read, so pinning a
+  // fingerprint can never stand in for the chain check.
+  const { server, p, spy, port } = await serveTls();
+  const res = await attempt(port, p.ca, BODY, p.cli.outsider);
   server.close();
-  assert.equal(res.status, 401, 'pinning a fingerprint must not bypass the chain check');
-  assert.deepEqual(failures, ['certificate_not_pinned']);
+  assert.equal(res.status, 0, `expected a handshake refusal, got HTTP ${res.status}`);
+  assert.ok((res as { refusedInHandshake?: boolean }).refusedInHandshake);
+  assert.equal(spy.calls, 0);
+});
+
+test('with a client CA configured, a connection without a certificate is refused', async () => {
+  // Configuring client certificates means requiring them. A listener that
+  // asked for a certificate and accepted connections without one would need
+  // certificate validation switched off in the handshake, which is what this
+  // replaced.
+  const { server, p, spy, port } = await serveTls();
+  const res = await attempt(port, p.ca, BODY, undefined, signedAs(HOST_A, BODY));
+  server.close();
+  assert.equal(res.status, 0, `expected a handshake refusal, got HTTP ${res.status}`);
+  assert.equal(spy.calls, 0);
 });
 
 test('a valid certificate does not rescue a bad signature', async () => {
@@ -496,8 +521,8 @@ test('a certificate and a signature must name the same caller', async () => {
   assert.deepEqual(failures, ['identity_mismatch']);
 });
 
-test('a signed request over TLS needs no client certificate', async () => {
-  const { server, p, port } = await serveTls();
+test('without a client CA, a signed request over TLS needs no certificate', async () => {
+  const { server, p, port } = await serveTls({ mutual: false });
   const res = await tlsPost(port, p.ca, BODY, undefined, signedAs(HOST_A, BODY));
   server.close();
   assert.equal(res.status, 200);

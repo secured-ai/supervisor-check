@@ -163,10 +163,13 @@ Two ways to prove who you are:
   and a digest of the body with an Ed25519 key. The supervisor holds only public keys, so
   leaking its configuration impersonates no one. This survives a mesh or proxy that
   terminates TLS in front of the supervisor, which mTLS does not.
-- **Client certificates.** When the supervisor terminates TLS itself, a certificate that
-  chains to the configured CA and whose SHA-256 fingerprint is pinned to a caller.
-  Pinned rather than matched by subject, because every certificate the CA ever issued has
-  a subject, and the CA is not what is being trusted.
+- **Client certificates.** When the supervisor terminates TLS itself with a `ca`
+  configured, every connection must present a certificate that chains to it, and the
+  handshake refuses any that does not before a byte of HTTP is read. Which caller a
+  certificate belongs to is then decided by its SHA-256 fingerprint, pinned per caller,
+  rather than by subject name, because every certificate the CA ever issued has a subject
+  and the CA is not what is being trusted. Configuring client certificates means requiring
+  them: signing-only callers use a listener without a `ca`.
 
 A credential that is presented and fails is a failure, never a fallback. A good
 certificate with a bad signature is refused, because the bad signature is the interesting

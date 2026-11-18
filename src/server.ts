@@ -34,8 +34,10 @@ export interface ServeOptions {
   callers: Caller[];
 
   /**
-   * Terminate TLS here. `ca` is what client certificates must chain to; a
-   * caller identified by certificate also needs its fingerprint pinned.
+   * Terminate TLS here. With `ca`, every connection must present a client
+   * certificate that chains to it, enforced in the handshake, and a caller
+   * identified by certificate also needs its fingerprint pinned. Without
+   * `ca`, no certificate is asked for and callers sign their requests.
    */
   tls?: { key: string | Buffer; cert: string | Buffer; ca?: string | Buffer | Array<string | Buffer> };
 
@@ -185,14 +187,24 @@ export function createSupervisorServer(opts: ServeOptions): HttpServer | HttpsSe
   };
 
   if (opts.tls) {
+    // With a client CA configured, every connection must present a
+    // certificate that chains to it, and the handshake enforces that before
+    // any request is read. Which caller a certificate belongs to is still
+    // decided per request, by pinned fingerprint, because the CA vouches for
+    // everything it ever issued and that is not the same as vouching for a
+    // caller. Without a client CA no certificate is requested, and callers
+    // authenticate by signing.
+    //
+    // An earlier version asked for a certificate without demanding one, so
+    // signing-only callers could share the listener, and checked each
+    // certificate per request instead. That worked, and it meant switching
+    // certificate validation off in the handshake, which a reviewer is right
+    // to read as a red flag. Requiring the certificate is the stronger
+    // posture: if you configure client certificates, you get them.
+    const mutual = opts.tls.ca ? { ca: opts.tls.ca, requestCert: true, rejectUnauthorized: true } : {};
     return createHttpsServer({
-      key: opts.tls.key, cert: opts.tls.cert, ca: opts.tls.ca,
-      // Ask for a certificate without demanding one, so callers that sign
-      // their requests can connect without one. Whether a presented
-      // certificate is trusted is decided per request, from the pinned
-      // fingerprints, not by the handshake.
-      requestCert: Boolean(opts.tls.ca),
-      rejectUnauthorized: false,
+      key: opts.tls.key, cert: opts.tls.cert,
+      ...mutual,
       minVersion: 'TLSv1.2',
     }, wrapped);
   }
