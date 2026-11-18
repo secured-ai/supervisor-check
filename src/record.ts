@@ -78,10 +78,29 @@ export function digestOf(value: unknown): string {
 
 const b64url = (buf: Buffer) => buf.toString('base64url');
 
+/**
+ * Ties a signed decision to the one request that asked for it.
+ *
+ * Carried in the JWS header, which is signed, rather than in the record, so
+ * the record keeps the shape spec section 5 gives it and the ledger stores it
+ * unchanged. Without this a signed "allow" is a reusable token: anyone who
+ * captured one could replay it in answer to a different question.
+ */
+export interface RequestBinding {
+  /** SHA-256 of the exact request body bytes. */
+  req: string;
+  /** The caller's single-use nonce, when it sent one. */
+  nonce?: string;
+  /** The caller the answer was given to. */
+  aud?: string;
+}
+
 /** Compact JWS, ES256, detached from nothing: the payload is the record. */
-export function sign(record: DecisionRecord, privateKeyPem: string, kid?: string): string {
+export function sign(record: DecisionRecord, privateKeyPem: string, kid?: string, binding?: RequestBinding): string {
   const key: KeyObject = createPrivateKey(privateKeyPem);
-  const header = b64url(Buffer.from(JSON.stringify({ alg: 'ES256', typ: 'JWT', ...(kid ? { kid } : {}) })));
+  const header = b64url(Buffer.from(JSON.stringify({
+    alg: 'ES256', typ: 'JWT', ...(kid ? { kid } : {}), ...(binding ?? {}),
+  })));
   const payload = b64url(Buffer.from(canonical(record)));
   const signer = createSign('SHA256');
   signer.update(`${header}.${payload}`);
@@ -95,14 +114,34 @@ export function publicKeyOf(privateKeyPem: string): string {
 }
 
 export function verify(jws: string, publicKeyPem: string): DecisionRecord | null {
+  return verifyWithHeader(jws, publicKeyPem)?.record ?? null;
+}
+
+/** As verify, and also returns the signed header, which carries the request binding. */
+export function verifyWithHeader(
+  jws: string, publicKeyPem: string,
+): { header: Record<string, unknown>; record: DecisionRecord } | null {
+  if (typeof jws !== 'string') return null;
   const parts = jws.split('.');
   if (parts.length !== 3) return null;
-  const [header, payload, sig] = parts;
-  const v = createVerify('SHA256');
-  v.update(`${header}.${payload}`);
-  const ok = v.verify(
-    { key: createPublicKey(publicKeyPem), dsaEncoding: 'ieee-p1363' },
-    Buffer.from(sig, 'base64url'));
+  const [header, payload, sig] = parts as [string, string, string];
+  let ok = false;
+  try {
+    const v = createVerify('SHA256');
+    v.update(`${header}.${payload}`);
+    ok = v.verify(
+      { key: createPublicKey(publicKeyPem), dsaEncoding: 'ieee-p1363' },
+      Buffer.from(sig, 'base64url'));
+  } catch {
+    return null;
+  }
   if (!ok) return null;
-  return JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as DecisionRecord;
+  try {
+    return {
+      header: JSON.parse(Buffer.from(header, 'base64url').toString('utf8')) as Record<string, unknown>,
+      record: JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as DecisionRecord,
+    };
+  } catch {
+    return null;
+  }
 }

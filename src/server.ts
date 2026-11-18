@@ -9,11 +9,13 @@
 // Two endpoints and nothing else. There is deliberately no way to write an
 // envelope over HTTP: see the note in envelopes.ts.
 
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { createServer as createHttpServer, type IncomingMessage, type Server as HttpServer, type ServerResponse } from 'node:http';
+import { createServer as createHttpsServer, type Server as HttpsServer } from 'node:https';
 import type { EnvelopeStore } from './envelopes.ts';
 import { UnknownEnvelope } from './envelopes.ts';
 import type { Supervisor, CheckRequest } from './supervisor.ts';
 import { buildRecord, sign, type DecisionRecord } from './record.ts';
+import { CallerRegistry, RateLimiter, sha256hex, type AuthFailure, type Caller } from './auth.ts';
 
 export interface ServeOptions {
   store: EnvelopeStore;
@@ -23,6 +25,41 @@ export interface ServeOptions {
   kid?: string;
   /** Called with every record, for whatever ledger the deployment runs. */
   onRecord?: (record: DecisionRecord, jws: string | null) => void;
+
+  /**
+   * Who may ask. Required: there is no unauthenticated mode, because a
+   * supervisor anyone can query is an oracle for the policy it enforces.
+   * See auth.ts.
+   */
+  callers: Caller[];
+
+  /**
+   * Terminate TLS here. `ca` is what client certificates must chain to; a
+   * caller identified by certificate also needs its fingerprint pinned.
+   */
+  tls?: { key: string | Buffer; cert: string | Buffer; ca?: string | Buffer | Array<string | Buffer> };
+
+  /**
+   * Serve plain HTTP. Only for a deployment where TLS terminates in front of
+   * this process, in a service mesh or a sidecar, and the hop between the two
+   * never leaves the host. It must be said out loud, so it is a flag rather
+   * than the default. Callers still sign every request either way.
+   */
+  insecurePlaintext?: boolean;
+
+  /** Per caller. Default 600. */
+  rateLimitPerMinute?: number;
+
+  /**
+   * Told why each refusal happened. The response a caller gets is
+   * deliberately vague, since telling an attacker which part of a forged
+   * request failed is a free lesson in forging the next one. The reason goes
+   * here instead, for whoever is watching.
+   */
+  onAuthFailure?: (reason: AuthFailure | 'forbidden_envelope' | 'rate_limited', detail: { remote?: string; caller?: string }) => void;
+
+  /** For tests. */
+  now?: () => number;
 }
 
 function send(res: ServerResponse, status: number, body: unknown): void {
@@ -31,7 +68,7 @@ function send(res: ServerResponse, status: number, body: unknown): void {
   res.end(text);
 }
 
-async function readJson(req: IncomingMessage, limit = 256 * 1024): Promise<unknown> {
+async function readBody(req: IncomingMessage, limit = 256 * 1024): Promise<Buffer> {
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -39,21 +76,62 @@ async function readJson(req: IncomingMessage, limit = 256 * 1024): Promise<unkno
     if (size > limit) throw new Error('request body too large');
     chunks.push(chunk as Buffer);
   }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+  return Buffer.concat(chunks);
 }
 
-export function createSupervisorServer(opts: ServeOptions): Server {
-  return createServer(async (req, res) => {
+/**
+ * One answer for "that envelope does not exist" and "that envelope is not
+ * yours". If they differed, a caller could enumerate every other host's
+ * envelope ids by watching which way it was refused.
+ */
+function noSuchEnvelope(envelopeId: string) {
+  return {
+    outcome: 'deny', rule: 'envelope',
+    detail: `no envelope ${envelopeId} is available to this caller`,
+    envelope_id: envelopeId, decided_at: new Date().toISOString(), signed: false,
+  };
+}
+
+export function createSupervisorServer(opts: ServeOptions): HttpServer | HttpsServer {
+  if (!opts.tls && !opts.insecurePlaintext) {
+    throw new Error('the supervisor will not serve plain HTTP by default: pass tls, or set insecurePlaintext ' +
+      'when TLS terminates in front of it on the same host');
+  }
+  const now = opts.now ?? Date.now;
+  const registry = new CallerRegistry(opts.callers, { now });
+  const limiter = new RateLimiter(opts.rateLimitPerMinute ?? 600, now);
+  const refuse = (res: ServerResponse, req: IncomingMessage, reason: AuthFailure | 'forbidden_envelope' | 'rate_limited', caller?: string) => {
+    opts.onAuthFailure?.(reason, { remote: req.socket.remoteAddress, caller });
+    if (reason === 'rate_limited') return send(res, 429, { error: 'rate_limited' });
+    return send(res, 401, { error: 'unauthenticated' });
+  };
+
+  const handler = async (req: IncomingMessage, res: ServerResponse) => {
+    // Reports liveness and nothing else. It used to report how many envelopes
+    // were loaded, which is a small fact, and a free one to anybody who asked.
     if (req.method === 'GET' && req.url === '/healthz') {
-      return send(res, 200, { ok: true, envelopes: opts.store.size });
+      return send(res, 200, { ok: true });
     }
     if (req.method !== 'POST' || req.url !== '/check') {
       return send(res, 404, { error: 'not_found' });
     }
 
+    let raw: Buffer;
+    try {
+      raw = await readBody(req);
+    } catch (e) {
+      return send(res, 400, { error: 'bad_request', detail: (e as Error).message });
+    }
+
+    // Before the body is parsed, and long before anything is evaluated. An
+    // unauthenticated request learns nothing, not even whether its JSON was valid.
+    const auth = registry.authenticate(req, raw);
+    if (!auth.ok) return refuse(res, req, auth.reason);
+    if (!limiter.take(auth.caller.id)) return refuse(res, req, 'rate_limited', auth.caller.id);
+
     let body: CheckRequest;
     try {
-      body = await readJson(req) as CheckRequest;
+      body = JSON.parse(raw.toString('utf8') || '{}') as CheckRequest;
     } catch (e) {
       return send(res, 400, { error: 'bad_request', detail: (e as Error).message });
     }
@@ -63,15 +141,16 @@ export function createSupervisorServer(opts: ServeOptions): Server {
 
     // An unknown envelope is a denial, not an error. A caller that asked for an
     // envelope this service does not have must not read a 404 as "carry on".
+    if (!registry.mayAsk(auth.caller, body.envelope_id)) {
+      opts.onAuthFailure?.('forbidden_envelope', { remote: req.socket.remoteAddress, caller: auth.caller.id });
+      return send(res, 200, noSuchEnvelope(body.envelope_id));
+    }
     let stored;
     try {
       stored = opts.store.get(body.envelope_id);
     } catch (e) {
       if (!(e instanceof UnknownEnvelope)) throw e;
-      return send(res, 200, {
-        outcome: 'deny', rule: 'envelope', detail: e.message,
-        envelope_id: body.envelope_id, decided_at: new Date().toISOString(), signed: false,
-      });
+      return send(res, 200, noSuchEnvelope(body.envelope_id));
     }
 
     let result;
@@ -89,9 +168,33 @@ export function createSupervisorServer(opts: ServeOptions): Server {
     const record = buildRecord(result, body.call, stored.digest, {
       agent_identity: body.agent_identity, principal: body.principal,
     });
-    const jws = opts.signingKeyPem ? sign(record, opts.signingKeyPem, opts.kid) : null;
+    const jws = opts.signingKeyPem
+      ? sign(record, opts.signingKeyPem, opts.kid, {
+          req: sha256hex(raw), aud: auth.caller.id, ...(auth.nonce ? { nonce: auth.nonce } : {}),
+        })
+      : null;
     opts.onRecord?.(record, jws);
 
     return send(res, 200, { ...result, record, signed: Boolean(jws), jws });
-  });
+  };
+
+  const wrapped = (req: IncomingMessage, res: ServerResponse) => {
+    handler(req, res).catch(() => {
+      if (!res.headersSent) send(res, 500, { error: 'internal' });
+    });
+  };
+
+  if (opts.tls) {
+    return createHttpsServer({
+      key: opts.tls.key, cert: opts.tls.cert, ca: opts.tls.ca,
+      // Ask for a certificate without demanding one, so callers that sign
+      // their requests can connect without one. Whether a presented
+      // certificate is trusted is decided per request, from the pinned
+      // fingerprints, not by the handshake.
+      requestCert: Boolean(opts.tls.ca),
+      rejectUnauthorized: false,
+      minVersion: 'TLSv1.2',
+    }, wrapped);
+  }
+  return createHttpServer(wrapped);
 }

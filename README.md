@@ -107,12 +107,7 @@ rather than from anything the agent can write to.
 
 ## Running it
 
-Node 22.18 or newer, which strips the types without a build step. Not on npm yet.
-
-```
-git clone https://github.com/secured-ai/supervisor-check
-cd supervisor-check && npm ci
-```
+Node 22.18 or newer.
 
 ```ts
 import { createSupervisorServer, EnvelopeStore, Supervisor } from 'supervisor-check';
@@ -125,14 +120,80 @@ const server = createSupervisorServer({
   supervisor: new Supervisor({ resolvers: [directory, ledger] }),
   signingKeyPem: process.env.SUPERVISOR_KEY,
   kid: 'supervisor-1',
+  callers: [
+    { id: 'support-host', publicKeyPem: SUPPORT_HOST_ED25519_PUB, envelopes: ['support-bot'] },
+    { id: 'billing-host', certFingerprint: 'AB:CD:...', envelopes: ['invoice-agent'] },
+  ],
+  tls: { key: TLS_KEY, cert: TLS_CERT, ca: CLIENT_CA },
+  onAuthFailure: (reason, who) => log.warn({ reason, ...who }, 'supervisor refused a caller'),
   onRecord: (record, jws) => ledgerSink.write(jws ?? JSON.stringify(record)),
 });
-server.listen(8080);
+server.listen(8443);
 ```
 
-`POST /check` with `{ envelope_id, call, agent_identity?, principal?, run? }` returns the
-outcome, the rule that decided it, what was derived and from where, the decision record
-and a compact JWS over it. `GET /healthz` reports how many envelopes are loaded.
+On the agent host:
+
+```ts
+import { SupervisorClient } from 'supervisor-check';
+
+const supervisor = new SupervisorClient({
+  url: 'https://supervisor.internal:8443',
+  callerId: 'support-host',
+  privateKeyPem: process.env.SUPPORT_HOST_ED25519_KEY,
+  supervisorPublicKeyPem: SUPERVISOR_PUB,      // pinned here, never fetched
+});
+
+const decision = await supervisor.check({ envelope_id: 'support-bot', call });
+if (decision.outcome !== 'allow') return refuse(decision.reason);
+```
+
+### Who may ask
+
+There is no unauthenticated mode. A supervisor anyone can query is an oracle: ask
+"may this agent refund $499 to this account" a few hundred times with different values
+and the envelope is mapped, which is the reconnaissance an attacker wants before steering
+an agent. So every request is authenticated before its body is even parsed, and each
+caller may only ask about the envelopes it is registered for. Asking about someone else's
+envelope gets the same denial, word for word, as asking about one that does not exist, so
+envelope ids cannot be enumerated either.
+
+Two ways to prove who you are:
+
+- **Signed requests.** The caller signs the method, path, a timestamp, a single-use nonce
+  and a digest of the body with an Ed25519 key. The supervisor holds only public keys, so
+  leaking its configuration impersonates no one. This survives a mesh or proxy that
+  terminates TLS in front of the supervisor, which mTLS does not.
+- **Client certificates.** When the supervisor terminates TLS itself, a certificate that
+  chains to the configured CA and whose SHA-256 fingerprint is pinned to a caller.
+  Pinned rather than matched by subject, because every certificate the CA ever issued has
+  a subject, and the CA is not what is being trusted.
+
+A credential that is presented and fails is a failure, never a fallback. A good
+certificate with a bad signature is refused, because the bad signature is the interesting
+thing about that request.
+
+Refusals tell the caller `unauthenticated` and nothing more. `onAuthFailure` gets the real
+reason, since telling a forger which part of the forgery failed is a free lesson.
+
+Plain HTTP needs `insecurePlaintext: true`, for a mesh or sidecar that terminates TLS on
+the same host. Requests are still signed either way.
+
+### Believing the answer
+
+The response carries `outcome` as plain JSON beside the signed record, and anything on the
+path can rewrite plain JSON. So `SupervisorClient` reads nothing the signature does not
+cover. The signature is checked against a key pinned in the client, and the JWS header
+must carry this request's body digest, this request's nonce and this caller's id, so a
+captured allow cannot be replayed as the answer to a different question.
+
+Every way of failing to establish an answer is a deny: unreachable, slower than
+`timeoutMs` (default 2000, covering the body as well as the headers), any status but 200,
+unsigned, signed by the wrong key, or answering something else. There is no option that
+turns any of these into an allow, and `check` never throws. A control that fails open
+under load is one an attacker switches off by causing load.
+
+`POST /check` with `{ envelope_id, call, agent_identity?, principal?, run? }`. `GET /healthz`
+reports liveness and nothing else.
 
 ### The envelope store has no write path
 

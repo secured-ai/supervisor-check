@@ -1,6 +1,6 @@
 {
   "name": "supervisor-check",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "An independent checker outside the agent's reasoning loop: derives the facts of a proposed call from the systems of record, evaluates them against the intent envelope, and signs the decision.",
   "license": "Apache-2.0",
   "author": "SecuredAI.org",
